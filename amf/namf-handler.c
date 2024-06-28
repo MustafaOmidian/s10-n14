@@ -1052,3 +1052,315 @@ cleanup:
 
     return OGS_OK;
 }
+// Function to handle inter-AMF handover
+//nic
+int amf_namf_comm_handle_inter_amf_handover(
+
+        ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
+
+{
+
+    int status, r;
+
+
+    amf_ue_t *amf_ue = NULL;
+
+    ran_ue_t *ran_ue = NULL;
+
+    amf_sess_t *sess = NULL;
+
+
+    ogs_pkbuf_t *n1buf = NULL;
+
+    ogs_pkbuf_t *n2buf = NULL;
+
+
+    ogs_pkbuf_t *gmmbuf = NULL;
+
+    ogs_pkbuf_t *ngapbuf = NULL;
+
+
+    char *supi = NULL;
+
+    uint8_t pdu_session_id = OGS_NAS_PDU_SESSION_IDENTITY_UNASSIGNED;
+
+
+    ogs_sbi_message_t sendmsg;
+
+    ogs_sbi_response_t *response = NULL;
+
+
+    OpenAPI_n1_n2_message_transfer_req_data_t *N1N2MessageTransferReqData;
+
+    OpenAPI_n1_n2_message_transfer_rsp_data_t N1N2MessageTransferRspData;
+
+    OpenAPI_n1_message_container_t *n1MessageContainer = NULL;
+
+    OpenAPI_ref_to_binary_data_t *n1MessageContent = NULL;
+
+    OpenAPI_n2_info_container_t *n2InfoContainer = NULL;
+
+    OpenAPI_n2_sm_information_t *smInfo = NULL;
+
+    OpenAPI_n2_info_content_t *n2InfoContent = NULL;
+
+    OpenAPI_ref_to_binary_data_t *ngapData = NULL;
+
+
+    OpenAPI_ngap_ie_type_e ngapIeType = OpenAPI_ngap_ie_type_NULL;
+
+
+    ogs_assert(stream);
+
+    ogs_assert(recvmsg);
+
+
+    N1N2MessageTransferReqData = recvmsg->N1N2MessageTransferReqData;
+
+    if (!N1N2MessageTransferReqData) {
+
+        ogs_error("No N1N2MessageTransferReqData");
+
+        return OGS_ERROR;
+
+    }
+
+
+    if (N1N2MessageTransferReqData->is_pdu_session_id == false) {
+
+        ogs_error("No PDU Session Identity");
+
+        return OGS_ERROR;
+
+    }
+
+    pdu_session_id = N1N2MessageTransferReqData->pdu_session_id;
+
+
+    supi = recvmsg->h.resource.component[1];
+
+    if (!supi) {
+
+        ogs_error("No SUPI");
+
+        return OGS_ERROR;
+
+    }
+
+
+    amf_ue = amf_ue_find_by_supi(supi);
+
+    if (!amf_ue) {
+
+        ogs_error("No UE context [%s]", supi);
+
+        return OGS_ERROR;
+
+    }
+
+
+    sess = amf_sess_find_by_psi(amf_ue, pdu_session_id);
+
+    if (!sess) {
+
+        ogs_error("[%s] No PDU Session Context [%d]",
+
+                amf_ue->supi, pdu_session_id);
+
+        return OGS_ERROR;
+
+    }
+
+
+    n1MessageContainer = N1N2MessageTransferReqData->n1_message_container;
+
+    if (n1MessageContainer) {
+
+        n1MessageContent = n1MessageContainer->n1_message_content;
+
+        if (!n1MessageContent || !n1MessageContent->content_id) {
+
+            ogs_error("No n1MessageContent");
+
+            return OGS_ERROR;
+
+        }
+
+
+        n1buf = ogs_sbi_find_part_by_content_id(
+
+                recvmsg, n1MessageContent->content_id);
+
+        if (!n1buf) {
+
+            ogs_error("[%s] No N1 SM Content", amf_ue->supi);
+
+            return OGS_ERROR;
+
+        }
+
+
+        // Copy the N1 buffer as it will be removed from ogs_sbi_message_free()
+
+        n1buf = ogs_pkbuf_copy(n1buf);
+
+        ogs_assert(n1buf);
+
+    }
+
+
+    n2InfoContainer = N1N2MessageTransferReqData->n2_info_container;
+
+    if (n2InfoContainer) {
+
+        smInfo = n2InfoContainer->sm_info;
+
+        if (!smInfo) {
+
+            ogs_error("No smInfo");
+
+            return OGS_ERROR;
+
+        }
+
+
+        n2InfoContent = smInfo->n2_info_content;
+
+        if (!n2InfoContent) {
+
+            ogs_error("No n2InfoContent");
+
+            return OGS_ERROR;
+
+        }
+
+
+        ngapIeType = n2InfoContent->ngap_ie_type;
+
+
+        ngapData = n2InfoContent->ngap_data;
+
+        if (!ngapData || !ngapData->content_id) {
+
+            ogs_error("No ngapData");
+
+            return OGS_ERROR;
+
+        }
+
+        n2buf = ogs_sbi_find_part_by_content_id(
+
+                recvmsg, ngapData->content_id);
+
+        if (!n2buf) {
+
+            ogs_error("[%s] No N2 SM Content", amf_ue->supi);
+
+            return OGS_ERROR;
+
+        }
+
+
+        // Copy the N2 buffer as it will be removed from ogs_sbi_message_free()
+
+        n2buf = ogs_pkbuf_copy(n2buf);
+
+        ogs_assert(n2buf);
+
+    }
+
+
+    memset(&sendmsg, 0, sizeof(sendmsg));
+
+
+    status = OGS_SBI_HTTP_STATUS_OK;
+
+
+    memset(&N1N2MessageTransferRspData, 0, sizeof(N1N2MessageTransferRspData));
+
+    N1N2MessageTransferRspData.cause =
+
+        OpenAPI_n1_n2_message_transfer_cause_N1_N2_TRANSFER_INITIATED;
+
+
+    sendmsg.N1N2MessageTransferRspData = &N1N2MessageTransferRspData;
+
+
+    switch (ngapIeType) {
+
+    case OpenAPI_ngap_ie_type_HANDOVER_REQ:
+
+        if (!n2buf) {
+
+            ogs_error("[%s] No N2 SM Content", amf_ue->supi);
+
+            return OGS_ERROR;
+
+        }
+
+
+        if (n1buf) {
+
+            gmmbuf = gmm_build_dl_nas_transport(sess,
+
+                    OGS_NAS_PAYLOAD_CONTAINER_N1_SM_INFORMATION, n1buf, 0, 0);
+
+            ogs_assert(gmmbuf);
+
+        }
+
+
+        if (gmmbuf) {
+
+            ran_ue = ran_ue_cycle(amf_ue->ran_ue);
+
+            if (ran_ue) {
+
+                ngapbuf = ngap_build_handover_request(ran_ue);
+
+                ogs_assert(ngapbuf);
+
+
+                r = ngap_send_to_ran_ue(ran_ue, ngapbuf);
+
+                ogs_expect(r == OGS_OK);
+
+                ogs_assert(r != OGS_ERROR);
+
+            } else {
+
+                ogs_warn("[%s] RAN-NG Context has already been removed",
+
+                            amf_ue->supi);
+
+            }
+
+        }
+
+        break;
+
+
+    default:
+
+        ogs_error("Not implemented ngapIeType[%d]", ngapIeType);
+
+        ogs_assert_if_reached();
+
+    }
+
+
+    response = ogs_sbi_build_response(&sendmsg, status);
+
+    ogs_assert(response);
+
+    ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+
+    if (sendmsg.http.location)
+
+        ogs_free(sendmsg.http.location);
+
+
+    return OGS_OK;
+
+}

@@ -179,6 +179,32 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                                 "Invalid HTTP method", sbi_message.h.method));
                     END
                     break;
+//nic
+            CASE(OGS_SBI_RESOURCE_NAME_INTER_AMF_HANDOVER)
+
+                rv = amf_namf_comm_handle_inter_amf_handover(
+
+                        stream, &sbi_message);
+
+                if (rv != OGS_OK) {
+
+                    ogs_assert(true ==
+
+                        ogs_sbi_server_send_error(stream,
+
+                            OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+
+                            &sbi_message,
+
+                            "No InterAMFHandoverReqData", NULL));
+
+                }
+
+                break;
+
+
+
+
 
                 DEFAULT
                     ogs_error("Invalid resource name [%s]",
